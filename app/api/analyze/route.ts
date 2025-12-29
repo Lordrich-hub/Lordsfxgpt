@@ -130,6 +130,19 @@ export async function POST(req: Request) {
       );
     }
 
+    if (
+      error?.code === "ECONNRESET" ||
+      error?.code === "ENOTFOUND" ||
+      error?.code === "ECONNREFUSED" ||
+      error?.message?.toLowerCase().includes("fetch failed") ||
+      error?.message?.toLowerCase().includes("connection")
+    ) {
+      return NextResponse.json(
+        { error: "Connection error: AI service unreachable. Please retry in a minute." },
+        { status: 500 }
+      );
+    }
+
     if (error?.message?.includes("Empty response")) {
       return NextResponse.json(
         { error: "🖼️ Chart image unclear. Please upload a clearer screenshot and try again." },

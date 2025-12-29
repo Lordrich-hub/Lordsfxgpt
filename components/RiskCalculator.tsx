@@ -33,13 +33,20 @@ export function RiskCalculator() {
 
     const riskAmount = (balance * risk) / 100;
     const pipDifference = Math.abs(entry - sl);
-    
-    // Standard lot calculation (100,000 units)
-    // For 0.01 lot, pip value is $0.10 for most pairs
-    const pipValue = 10; // $10 per pip for standard lot
-    const pipsAtRisk = pipDifference * 10000; // Convert to pips
-    
-    const lotSize = riskAmount / (pipsAtRisk * pipValue / 100);
+
+    // Determine pip size (0.0001 for most FX, 0.01 for JPY / metals style quotes)
+    const pipSize = entry >= 10 ? 0.01 : 0.0001;
+    const pipsAtRisk = pipDifference / pipSize;
+
+    if (pipsAtRisk === 0) {
+      alert("Stop loss must differ from entry price");
+      return;
+    }
+
+    // Approx pip value per standard lot in USD
+    const pipValuePerLot = (pipSize / entry) * 100000;
+    const dollarRiskPerLot = pipsAtRisk * pipValuePerLot;
+    const lotSize = riskAmount / dollarRiskPerLot;
     const positionValue = lotSize * 100000 * entry;
 
     // Generate recommendation
