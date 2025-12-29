@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openai } from "@/lib/openai";
+import { getOpenAIClient } from "@/lib/openai";
 import { visionPrompt } from "@/lib/visionPrompt";
 import { buildAnalysis } from "@/lib/structureEngine";
 import { ChartState, TopDownFrame } from "@/lib/types";
@@ -10,12 +10,21 @@ const MAX_SIZE = 8 * 1024 * 1024; // 8MB
 
 export async function POST(req: Request) {
   try {
-    // Debug: log environment
     const apiKey = process.env.OPENAI_API_KEY;
-    console.log("[ANALYZE] API Key present:", !!apiKey);
-    console.log("[ANALYZE] API Key length:", apiKey?.length || 0);
-    console.log("[ANALYZE] API Key first 10 chars:", apiKey?.substring(0, 10) || "MISSING");
-    console.log("[ANALYZE] All env vars:", Object.keys(process.env).filter(k => k.includes("OPENAI") || k.includes("API")).join(", "));
+    
+    if (!apiKey) {
+      console.error("[ANALYZE] OPENAI_API_KEY is missing!");
+      return NextResponse.json(
+        { error: "AI service not configured. Please contact support." },
+        { status: 500 }
+      );
+    }
+
+    console.log("[ANALYZE] API Key found, length:", apiKey.length);
+    
+    // Get OpenAI client inside the function
+    const openai = getOpenAIClient();
+    console.log("[ANALYZE] OpenAI client initialized");
 
     const contentType = req.headers.get("content-type") || "";
 
