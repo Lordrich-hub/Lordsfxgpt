@@ -11,8 +11,11 @@ const MAX_SIZE = 8 * 1024 * 1024; // 8MB
 export async function POST(req: Request) {
   try {
     // Debug: log environment
-    console.log("[ANALYZE] API Key present:", !!process.env.OPENAI_API_KEY);
-    console.log("[ANALYZE] API Key length:", process.env.OPENAI_API_KEY?.length || 0);
+    const apiKey = process.env.OPENAI_API_KEY;
+    console.log("[ANALYZE] API Key present:", !!apiKey);
+    console.log("[ANALYZE] API Key length:", apiKey?.length || 0);
+    console.log("[ANALYZE] API Key first 10 chars:", apiKey?.substring(0, 10) || "MISSING");
+    console.log("[ANALYZE] All env vars:", Object.keys(process.env).filter(k => k.includes("OPENAI") || k.includes("API")).join(", "));
 
     const contentType = req.headers.get("content-type") || "";
 
