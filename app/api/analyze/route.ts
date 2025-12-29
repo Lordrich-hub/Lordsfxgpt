@@ -39,14 +39,14 @@ export async function POST(req: Request) {
 
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
-        { error: "OpenAI API key not configured. Use manual input or set OPENAI_API_KEY in .env.local" },
+        { error: "AI service not configured. Please use manual input or contact support." },
         { status: 500 }
       );
     }
 
     if (process.env.OPENAI_API_KEY.includes("your_openai_key_here") || process.env.OPENAI_API_KEY.length < 20) {
       return NextResponse.json(
-        { error: "Invalid OpenAI API key in .env.local. Please set your actual API key from platform.openai.com" },
+        { error: "AI service configuration invalid. Please contact support." },
         { status: 500 }
       );
     }
@@ -56,30 +56,44 @@ export async function POST(req: Request) {
     const profile = typeof profileRaw === "string" ? (profileRaw.toUpperCase() as any) : undefined;
 
     for (const f of files) {
-      const base64 = Buffer.from(await f.arrayBuffer()).toString("base64");
-      const imageUrl = `data:${f.type};base64,${base64}`;
+      try {
+        const base64 = Buffer.from(await f.arrayBuffer()).toString("base64");
+        const imageUrl = `data:${f.type};base64,${base64}`;
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: visionPrompt },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Extract chart_state from this TradingView screenshot. Return JSON only." },
-              { type: "image_url", image_url: { url: imageUrl } },
-            ],
-          },
-        ],
-        response_format: { type: "json_object" },
-      });
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: visionPrompt },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Extract chart_state from this TradingView screenshot. Return JSON only." },
+                { type: "image_url", image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          response_format: { type: "json_object" },
+          max_tokens: 2000,
+        });
 
-      const text = response.choices[0]?.message?.content;
-      if (!text) {
-        throw new Error("Empty response from model");
+        const text = response.choices[0]?.message?.content;
+        if (!text) {
+          throw new Error("Empty response from AI Vision service");
+        }
+        
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (parseErr) {
+          console.error("JSON parse error:", text.substring(0, 200));
+          throw new Error("Failed to parse AI response as JSON");
+        }
+        
+        chartStates.push(parsed as ChartState);
+      } catch (fileError: any) {
+        console.error(`Error processing file ${f.name}:`, fileError?.message);
+        throw fileError;
       }
-      const parsed = JSON.parse(text) as ChartState;
-      chartStates.push(parsed);
     }
 
     // Compose top-down: last file treated as execution timeframe
@@ -95,24 +109,49 @@ export async function POST(req: Request) {
 
     return NextResponse.json(analysis);
   } catch (error: any) {
-    console.error("/api/analyze failed", error?.message || error);
+    console.error("/api/analyze error:", {
+      message: error?.message,
+      status: error?.status,
+      type: error?.constructor?.name,
+    });
     
-    // Handle OpenAI API errors specifically
-    if (error?.status === 401) {
+    // Handle AI service errors
+    if (error?.status === 401 || error?.message?.includes("401")) {
       return NextResponse.json(
-        { error: "Invalid OpenAI API key. Please check your key at platform.openai.com/api-keys" },
+        { error: "❌ AI service authentication failed. Please contact support for assistance." },
         { status: 500 }
       );
     }
     
-    if (error?.status === 429) {
+    if (error?.status === 429 || error?.message?.includes("429")) {
       return NextResponse.json(
-        { error: "OpenAI rate limit exceeded. Please try again in a moment." },
+        { error: "⏳ Service temporarily busy. Please wait 60 seconds and try again." },
+        { status: 500 }
+      );
+    }
+
+    if (error?.message?.includes("Empty response")) {
+      return NextResponse.json(
+        { error: "🖼️ Chart image unclear. Please upload a clearer screenshot and try again." },
+        { status: 500 }
+      );
+    }
+
+    if (error?.message?.includes("JSON")) {
+      return NextResponse.json(
+        { error: "⚠️ Analysis failed. Please try uploading a different chart image." },
+        { status: 500 }
+      );
+    }
+
+    if (error?.message?.includes("Timeout") || error?.message?.includes("timeout")) {
+      return NextResponse.json(
+        { error: "⏱️ Request timed out. AI service is processing slowly. Please try again." },
         { status: 500 }
       );
     }
     
-    const errorMessage = error?.message || "Analysis failed. Please try again.";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const errorMessage = error?.message || "Analysis failed. Please check console for details.";
+    return NextResponse.json({ error: `Error: ${errorMessage}` }, { status: 500 });
   }
 }

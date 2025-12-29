@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { UploadBox } from "@/components/UploadBox";
 import { ResultPanel } from "@/components/ResultPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { RiskCalculator } from "@/components/RiskCalculator";
 import { AnalysisResponse } from "@/lib/types";
 import { loadHistory, saveToHistory } from "@/lib/storage";
 
@@ -57,13 +58,21 @@ export default function Page() {
     try {
       const form = new FormData();
       files.forEach((f) => form.append("file", f));
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout
+      
       const res = await fetch("/api/analyze", {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+      
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Analysis failed");
+        const body = await res.json().catch(() => ({ error: "Unknown error" }));
+        const errorMsg = body.error || `Server error: ${res.status}`;
+        throw new Error(errorMsg);
       }
       const json = (await res.json()) as AnalysisResponse;
       setData(json);
@@ -71,7 +80,20 @@ export default function Page() {
       setHistory(loadHistory());
       clearStack();
     } catch (err: any) {
-      setError(err.message || "Analysis failed");
+      let errorMsg = "Analysis failed";
+      
+      if (err.name === "AbortError") {
+        errorMsg = "⏱️ Request timed out (90s). Service is taking too long. Please try again.";
+      } else if (err instanceof TypeError && err.message.includes("fetch")) {
+        errorMsg = "🔌 Network error: Cannot reach server. Make sure the app is running.";
+      } else if (err.message?.includes("AI service")) {
+        errorMsg = "🔑 " + err.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      
+      setError(errorMsg);
+      console.error("Fetch error:", err);
     } finally {
       setLoading(false);
     }
@@ -178,6 +200,12 @@ export default function Page() {
 
         {/* Sidebar */}
         <aside className="w-full max-w-sm space-y-6">
+          {/* Risk Calculator */}
+          <div className="space-y-4 animate-fade-in">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Account Management</h2>
+            <RiskCalculator />
+          </div>
+
           {/* History */}
           <div className="space-y-4 animate-fade-in animation-delay-100">
             <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Recent Analyses</h2>
