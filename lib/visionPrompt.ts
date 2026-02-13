@@ -19,10 +19,10 @@ STRUCTURE ANALYSIS:
 - **Retest**: Price returns to a broken level and rejects it (confirms the break)
 
 WHAT TO AVOID:
-- ❌ NO Smart Money Concepts terminology (OB, FVG, liquidity, mitigation, etc.)
-- ❌ NO estimates like "around 155.8" - give exact number: 155.78450
-- ❌ NO guessing prices - if you can't read it clearly, examine the grid lines more carefully
-- ❌ NO incomplete data - all swings need precise prices
+- No Smart Money Concepts terminology (OB, FVG, liquidity, mitigation, etc.)
+- No estimates like "around 155.8"; provide the exact number, e.g. 155.78450
+- No guessing prices; if you cannot read it clearly, use grid lines and the Y-axis
+- No incomplete data; all swings must include a numeric price
 
 MULTI-STEP REASONING PROCESS:
 Step 1: Read the Y-axis scale carefully - what are the price levels marked?
@@ -43,7 +43,7 @@ REQUIRED JSON OUTPUT SCHEMA:
     { "type": "SwingHigh", "label": "SH3", "zone": "155.92-155.94", "price": 155.93450 },
     { "type": "SwingLow", "label": "SL2", "zone": "155.78-155.80", "price": 155.78950 },
     { "type": "SwingHigh", "label": "SH2", "zone": "155.88-155.90", "price": 155.89200 },
-    { "type": "SwingLow", "label": "SL1", "zone": "155.65-155.67", "zone": 155.66100 }
+    { "type": "SwingLow", "label": "SL1", "zone": "155.65-155.67", "price": 155.66100 }
   ],
   "breaks": [
     { "type": "bos", "confirmed": true, "description": "Clean break above SH2 at 155.89200, confirming bullish momentum" }
@@ -60,10 +60,11 @@ REQUIRED JSON OUTPUT SCHEMA:
 }
 
 VALIDATION CHECKLIST:
-✓ All swings have exact numerical prices (5 decimals for forex)
-✓ Current_price is filled with actual market price
-✓ Trend_hint matches the swing pattern (HH/HL = bullish, LH/LL = bearish)
-✓ Notes explain the structure clearly with specific price references
+
+- All swings have exact numerical prices (use the chart scale)
+- current_price is filled with the visible market price
+- trend_hint matches the swing pattern (HH/HL = bullish, LH/LL = bearish)
+- notes include specific price references
 
 Return ONLY the JSON object. No markdown code blocks, no explanations before or after.`;
 

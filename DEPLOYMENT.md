@@ -147,6 +147,14 @@ Make sure you have these set in your deployment platform:
 
 - `OPENAI_API_KEY` - Your OpenAI API key from platform.openai.com
 
+If you enable account-based history (recommended for multi-user sharing), also set:
+
+- `DATABASE_URL` - Postgres connection string (Vercel Postgres or any managed Postgres)
+- `PRISMA_DATABASE_URL` - Direct (non-pooled) Postgres connection string for Prisma migrations (recommended)
+- `NEXTAUTH_SECRET` - Random secret for session encryption
+- `NEXTAUTH_URL` - Your site URL (e.g. https://your-app.vercel.app)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` - Google OAuth credentials
+
 ### 3. Test Locally First
 
 ```bash

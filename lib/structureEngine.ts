@@ -2,11 +2,188 @@ import { AnalysisResponse, BiasState, ChartBreak, ChartState, ChartSwing, KeyLev
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-/**
- * Round price to nearest pip (4 decimals for most pairs, 2 for JPY)
- */
-const roundToPip = (price: number): number => {
-  return Math.round(price * 10000) / 10000;
+const parseZoneBounds = (zone: string | undefined): { low: number; high: number } | null => {
+  if (!zone) return null;
+  const nums = zone
+    .replace(/,/g, "")
+    .match(/\d+(?:\.\d+)?/g)
+    ?.map((v) => Number(v))
+    .filter((n) => Number.isFinite(n));
+
+  if (!nums || nums.length === 0) return null;
+  if (nums.length === 1) return { low: nums[0], high: nums[0] };
+  const low = Math.min(nums[0], nums[1]);
+  const high = Math.max(nums[0], nums[1]);
+  return { low, high };
+};
+
+const ensureStrictOrdering = (direction: "LONG" | "SHORT", entry: number, sl: number, tp1: number, tp2: number, tick: number) => {
+  if (direction === "LONG") {
+    const fixedSl = sl >= entry ? roundToTickDown(entry - tick, tick) : sl;
+    const fixedTp1 = tp1 <= entry ? roundToTickUp(entry + tick, tick) : tp1;
+    const fixedTp2 = tp2 <= fixedTp1 ? roundToTickUp(fixedTp1 + tick, tick) : tp2;
+    return { sl: fixedSl, tp1: fixedTp1, tp2: fixedTp2 };
+  }
+
+  const fixedSl = sl <= entry ? roundToTickUp(entry + tick, tick) : sl;
+  const fixedTp1 = tp1 >= entry ? roundToTickDown(entry - tick, tick) : tp1;
+  const fixedTp2 = tp2 >= fixedTp1 ? roundToTickDown(fixedTp1 - tick, tick) : tp2;
+  return { sl: fixedSl, tp1: fixedTp1, tp2: fixedTp2 };
+};
+
+const formatExecutionPlan = (params: {
+  direction: "LONG" | "SHORT";
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tickSize: number;
+  entryMode: "MARKET" | "LIMIT" | "STOP";
+  entryReference?: string;
+}) => {
+  const { direction, entry, sl, tp1, tp2, tickSize, entryMode, entryReference } = params;
+  const riskPerUnit = direction === "LONG" ? entry - sl : sl - entry;
+  const rewardToTp1 = direction === "LONG" ? tp1 - entry : entry - tp1;
+  const rr1 = riskPerUnit > 0 ? rewardToTp1 / riskPerUnit : 0;
+  const oneRMove = direction === "LONG" ? entry + riskPerUnit : entry - riskPerUnit;
+  const beTrigger = roundToTick(direction === "LONG" ? oneRMove : oneRMove, tickSize);
+  const ref = entryReference ? `@ ${entryReference}` : undefined;
+
+  return [
+    `MODE ${entryMode}`,
+    ref,
+    `MGMT +1R→protect (${beTrigger})`,
+    "TP1→partial",
+    "TP2→trail",
+    "RULE no-add/no-chase",
+    rr1 >= 1.5 ? "RR OK" : "RR borderline",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+};
+
+const formatVipRationale = (params: {
+  direction: "LONG" | "SHORT";
+  quality: SignalQuality;
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  rr: string;
+  confluence: number;
+  plan: string;
+  anchorLabel: string;
+}) => {
+  const { direction, quality, entry, sl, tp1, tp2, rr, confluence, plan, anchorLabel } = params;
+  return `${direction} ${quality} | Entry ${entry} | SL ${sl} (${anchorLabel}) | TP1 ${tp1} | TP2 ${tp2} | RR ${rr} | Conf ${confluence}/100 | ${plan}`;
+};
+
+const inferTickSize = (state: ChartState, referencePrice?: number): number => {
+  const pair = (state.pair || "").toUpperCase();
+  if (pair.includes("JPY")) return 0.01;
+
+  const text = state.price_region || "";
+  const match = text.match(/\d+(?:\.(\d+))?/);
+  const decimalsFromRegion = match?.[1]?.length;
+  if (typeof decimalsFromRegion === "number") {
+    const dec = clamp(decimalsFromRegion, 0, 8);
+    return Math.pow(10, -dec);
+  }
+
+  const ref = referencePrice ?? state.current_price;
+  if (typeof ref === "number") {
+    // Conservative fallback:
+    // - FX-like quotes (<10) typically use 4-5 decimals; use 4.
+    // - Higher-priced instruments commonly use 2 decimals.
+    return ref < 10 ? 0.0001 : 0.01;
+  }
+
+  return 0.0001;
+};
+
+const roundToTick = (price: number, tickSize: number): number => {
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) return price;
+  const scaled = price / tickSize;
+  const rounded = Math.round(scaled) * tickSize;
+  // Normalize to a stable decimal representation.
+  const decimals = tickSize >= 1 ? 0 : clamp(Math.round(Math.log10(1 / tickSize)), 0, 8);
+  return Number(rounded.toFixed(decimals));
+};
+
+const roundToTickUp = (price: number, tickSize: number): number => {
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) return price;
+  const scaled = price / tickSize;
+  const rounded = Math.ceil(scaled) * tickSize;
+  const decimals = tickSize >= 1 ? 0 : clamp(Math.round(Math.log10(1 / tickSize)), 0, 8);
+  return Number(rounded.toFixed(decimals));
+};
+
+const roundToTickDown = (price: number, tickSize: number): number => {
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) return price;
+  const scaled = price / tickSize;
+  const rounded = Math.floor(scaled) * tickSize;
+  const decimals = tickSize >= 1 ? 0 : clamp(Math.round(Math.log10(1 / tickSize)), 0, 8);
+  return Number(rounded.toFixed(decimals));
+};
+
+const inferPsychStep = (state: ChartState, price: number, tickSize: number): number => {
+  const pair = (state.pair || "").toUpperCase();
+  const fxHints = ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"];
+  const looksFx = pair.length === 6 || fxHints.some((c) => pair.includes(c)) || price < 20;
+
+  if (looksFx) {
+    if (pair.includes("JPY") || price >= 20) return 0.5;
+    return Math.max(0.005, tickSize * 50);
+  }
+
+  if (price >= 1000) return 100;
+  if (price >= 200) return 50;
+  if (price >= 20) return 10;
+  return 5;
+};
+
+const nextPsychLevel = (direction: "LONG" | "SHORT", price: number, step: number, tickSize: number): number | null => {
+  if (!Number.isFinite(price) || !Number.isFinite(step) || step <= 0) return null;
+  if (direction === "LONG") {
+    let level = Math.ceil(price / step) * step;
+    if (level <= price + tickSize * 0.5) level += step;
+    return roundToTick(level, tickSize);
+  }
+
+  let level = Math.floor(price / step) * step;
+  if (level >= price - tickSize * 0.5) level -= step;
+  return roundToTick(level, tickSize);
+};
+
+const selectTargets = (
+  direction: "LONG" | "SHORT",
+  entry: number,
+  swingTargets: number[],
+  psychStep: number,
+  tickSize: number
+): { tp1: number; tp2: number } | null => {
+  const psych1 = nextPsychLevel(direction, entry, psychStep, tickSize);
+  const candidates = [...swingTargets];
+  if (psych1 !== null) candidates.push(psych1);
+
+  const filtered = candidates.filter((t) => (direction === "LONG" ? t > entry : t < entry));
+  if (!filtered.length) return null;
+
+  const unique = Array.from(new Set(filtered.map((v) => roundToTick(v, tickSize))));
+  const byDistance = unique.slice().sort((a, b) => Math.abs(a - entry) - Math.abs(b - entry));
+  const tp1 = byDistance[0];
+
+  const remaining: number[] = [];
+  swingTargets.forEach((t) => {
+    if (direction === "LONG" ? t > tp1 : t < tp1) remaining.push(t);
+  });
+  const psych2 = psych1 !== null ? nextPsychLevel(direction, psych1, psychStep, tickSize) : null;
+  if (psych1 !== null && (direction === "LONG" ? psych1 > tp1 : psych1 < tp1)) remaining.push(psych1);
+  if (psych2 !== null && (direction === "LONG" ? psych2 > tp1 : psych2 < tp1)) remaining.push(psych2);
+
+  if (!remaining.length) return null;
+  const tp2 = remaining.sort((a, b) => Math.abs(a - tp1) - Math.abs(b - tp1))[0];
+  return { tp1, tp2 };
 };
 
 const mapBreakType = (brk: ChartBreak) => {
@@ -100,9 +277,8 @@ const computeConfidence = (state: ChartState): { score: number; explanation: str
 };
 
 /**
- * ENHANCED confluence scoring for PROP FIRM SUCCESS
- * Minimum 75% for signals (vs old 65%)
- * Focuses on HIGH PROBABILITY setups only
+ * Deterministic confluence scoring.
+ * Note: this is a rules-based score, not a probability estimate.
  */
 const calculateConfluenceScore = (
   bias: BiasState,
@@ -176,7 +352,7 @@ const identifyPatternType = (
   return "REVERSAL";
 };
 
-const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structure): { planType: PlanType; wait_for: string[]; trigger: string[]; invalidation: string[]; targets: string[]; entry_signal?: EntrySignal } => {
+const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structure, higherTimeframe?: ChartState): { planType: PlanType; wait_for: string[]; trigger: string[]; invalidation: string[]; targets: string[]; entry_signal?: EntrySignal } => {
   const lastHigh = structure.recent_swings.filter((s) => s.type === "SwingHigh").at(-1);
   const lastLow = structure.recent_swings.filter((s) => s.type === "SwingLow").at(-1);
 
@@ -184,7 +360,7 @@ const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structur
   const targetCandidates = bias === "Bullish" ? (lastHigh?.zone ? [lastHigh.zone] : []) : bias === "Bearish" ? (lastLow?.zone ? [lastLow.zone] : []) : [];
 
   // Calculate entry signal with precise prices
-  const entrySignal = calculateEntrySignal(bias, state, lastHigh, lastLow);
+  const entrySignal = calculateEntrySignal(bias, state, lastHigh, lastLow, higherTimeframe);
 
   // No-trade when ranging and no confirmed break
   const hasConfirmedBreak = state.breaks.some((b) => b.confirmed && b.type !== "none");
@@ -202,10 +378,10 @@ const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structur
   if (bias === "Bullish") {
     return {
       planType: state.range.hasRange ? "RangePlay" : "Continuation",
-      wait_for: ["Pullback that holds above last swing low", "Retest of broken structure"],
-      trigger: ["Bullish rejection candle at support", "Break of minor high after pullback"],
-      invalidation: baseInvalidation.length ? baseInvalidation : ["Close below prior swing low"],
-      targets: targetCandidates.length ? targetCandidates : ["Next visible swing high zone"],
+      wait_for: ["Price compressing below last swing high", "Breakout candle closing above the swing high"],
+      trigger: ["Buy stop above last swing high", "Breakout with follow-through"],
+      invalidation: baseInvalidation.length ? baseInvalidation : ["Stop below prior swing low"],
+      targets: targetCandidates.length ? targetCandidates : ["Next swing high or psych level"],
       entry_signal: entrySignal,
     };
   }
@@ -213,10 +389,10 @@ const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structur
   if (bias === "Bearish") {
     return {
       planType: state.range.hasRange ? "RangePlay" : "Continuation",
-      wait_for: ["Pullback that holds below last swing high", "Retest of broken support as resistance"],
-      trigger: ["Bearish rejection candle at resistance", "Break of minor low after pullback"],
-      invalidation: baseInvalidation.length ? baseInvalidation : ["Close above prior swing high"],
-      targets: targetCandidates.length ? targetCandidates : ["Next visible swing low zone"],
+      wait_for: ["Price compressing above last swing low", "Breakout candle closing below the swing low"],
+      trigger: ["Sell stop below last swing low", "Breakout with follow-through"],
+      invalidation: baseInvalidation.length ? baseInvalidation : ["Stop above prior swing high"],
+      targets: targetCandidates.length ? targetCandidates : ["Next swing low or psych level"],
       entry_signal: entrySignal,
     };
   }
@@ -235,7 +411,7 @@ const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structur
 /**
  * ENHANCED entry signal with STRICT PROP FIRM requirements
  * - Minimum 75% confluence (increased from 65%)
- * - Minimum 1:2 R:R ratio (ideally 1:3+)
+ * - Minimum 1:1.5 R:R ratio (extend TP to higher timeframe if needed)
  * - Structure-based dynamic SL/TP
  * - Position sizing for risk management
  */
@@ -243,11 +419,12 @@ const calculateEntrySignal = (
   bias: BiasState,
   state: ChartState,
   lastHigh: { type: SwingType; label: string; zone: string; price?: number } | undefined,
-  lastLow: { type: SwingType; label: string; zone: string; price?: number } | undefined
+  lastLow: { type: SwingType; label: string; zone: string; price?: number } | undefined,
+  higherTimeframe?: ChartState
 ): EntrySignal | undefined => {
   const confluence = calculateConfluenceScore(bias, state, lastHigh, lastLow);
-  const patternType = identifyPatternType(bias, state, lastHigh, lastLow);
-  const minConfluence = 75; // INCREASED from 65% - only high-probability setups
+  const patternType = "BREAKOUT" as const;
+  const minConfluence = 75;
 
   // Skip if below minimum confluence threshold
   if (confluence < minConfluence) {
@@ -258,17 +435,16 @@ const calculateEntrySignal = (
       take_profit_1: null,
       take_profit_2: null,
       risk_reward_ratio: "N/A",
-      rationale: `LOW PROBABILITY. Confluence ${confluence}/100 (need ${minConfluence}+). Wait for clearer setup with confirmed structure break + retest.`,
+      rationale: `Below threshold. Confluence ${confluence}/100 (minimum ${minConfluence}). Wait for a confirmed structure break and a clean retest.`,
       confluence_score: confluence,
       signal_quality: "INVALID",
       pattern_type: patternType,
-      probability: confluence,
       prop_firm_compliant: false,
     };
   }
 
-  // Additional guard: STRICT filter for choppy/range conditions
-  if ((state.chop_detected || bias === "Range" || bias === "Transition") && confluence < 85) {
+  // Additional guard: breakouts only in directional conditions
+  if (bias === "Range" || bias === "Transition") {
     return {
       direction: "WAIT",
       entry_price: null,
@@ -276,11 +452,10 @@ const calculateEntrySignal = (
       take_profit_1: null,
       take_profit_2: null,
       risk_reward_ratio: "N/A",
-      rationale: "CHOPPY MARKET. No clear directional bias. Waiting for structure to develop or clean break. Prop firm rule: avoid low-confidence trades.",
+      rationale: "Non-directional structure. Breakout signals require a clear bullish or bearish bias.",
       confluence_score: confluence,
       signal_quality: "INVALID",
       pattern_type: patternType,
-      probability: confluence,
       prop_firm_compliant: false,
     };
   }
@@ -303,57 +478,46 @@ const calculateEntrySignal = (
       confluence_score: confluence,
       signal_quality: "INVALID",
       pattern_type: patternType,
-      probability: confluence,
       prop_firm_compliant: false,
     };
   }
 
-  // Get all swing highs and lows for structure-based levels
-  const allHighs = state.swings.filter((s) => s.type === "SwingHigh" && s.price).sort((a, b) => (b.price || 0) - (a.price || 0));
-  const allLows = state.swings.filter((s) => s.type === "SwingLow" && s.price).sort((a, b) => (a.price || 0) - (b.price || 0));
+  const tickSize = inferTickSize(state, refPrice);
+
+  const lastHighZone = parseZoneBounds(lastHigh?.zone);
+  const lastLowZone = parseZoneBounds(lastLow?.zone);
+
+  const recentSwingPrices = state.swings
+    .map((s) => s.price)
+    .filter((p): p is number => typeof p === "number")
+    .slice(-6);
+  const volatilityProxy = recentSwingPrices.length >= 2 ? Math.max(...recentSwingPrices) - Math.min(...recentSwingPrices) : 0;
+  const baseBufferTicks = clamp(Math.round((volatilityProxy / Math.max(tickSize, 1e-12)) * 0.02), 2, 20);
+  const buffer = tickSize * baseBufferTicks;
+
+  const pricedHighs = state.swings
+    .filter((s) => s.type === "SwingHigh" && typeof s.price === "number" && Number.isFinite(s.price))
+    .map((s) => ({ ...s, price: s.price as number }));
+  const pricedLows = state.swings
+    .filter((s) => s.type === "SwingLow" && typeof s.price === "number" && Number.isFinite(s.price))
+    .map((s) => ({ ...s, price: s.price as number }));
+
+  const psychStep = inferPsychStep(state, refPrice, tickSize);
+
+  const higherTfHighs = higherTimeframe?.swings
+    .filter((s) => s.type === "SwingHigh" && typeof s.price === "number" && Number.isFinite(s.price))
+    .map((s) => s.price as number)
+    .sort((a, b) => a - b) ?? [];
+
+  const higherTfLows = higherTimeframe?.swings
+    .filter((s) => s.type === "SwingLow" && typeof s.price === "number" && Number.isFinite(s.price))
+    .map((s) => s.price as number)
+    .sort((a, b) => a - b) ?? [];
 
   if (bias === "Bullish") {
-    // Need at least a low to trade from
-    if (!lastLow?.price || allHighs.length === 0) {
-      return {
-        direction: "LONG",
-        entry_price: null,
-        stop_loss: null,
-        take_profit_1: null,
-        take_profit_2: null,
-        risk_reward_ratio: "N/A",
-        rationale: "Bullish bias detected but cannot calculate precise entry - swing structure incomplete.",
-        confluence_score: confluence,
-        signal_quality: "INVALID",
-        pattern_type: patternType,
-        probability: confluence,
-        prop_firm_compliant: false,
-      };
-    }
-
-    // Entry: Near current price or at swing low + small buffer
-    const entryPrice = roundToPip(refPrice);
-    
-    // SL: Below last swing low (respecting structure) with 3% buffer
-    const buffer = Math.abs(refPrice - lastLow.price) * 0.03; // Tighter 3% buffer
-    const stopLoss = roundToPip(lastLow.price - buffer);
-    
-    // TP1: Next swing high above entry (aim for 1:2 minimum)
-    const tp1High = allHighs.find(h => (h.price || 0) > entryPrice);
-    const minTp1 = roundToPip(entryPrice + (entryPrice - stopLoss) * 2.0); // Minimum 1:2
-    const tp1 = tp1High?.price ? roundToPip(Math.max(tp1High.price, minTp1)) : minTp1;
-    
-    // TP2: Higher swing high (aim for 1:3+)
-    const tp2High = allHighs.find(h => (h.price || 0) > tp1 + 0.0015);
-    const minTp2 = roundToPip(entryPrice + (entryPrice - stopLoss) * 3.0); // Minimum 1:3
-    const tp2 = tp2High?.price ? roundToPip(Math.max(tp2High.price, minTp2)) : minTp2;
-    
-    const risk = entryPrice - stopLoss;
-    const reward = tp1 - entryPrice;
-    const rrRatio = reward / risk;
-    
-    // STRICT: Enforce minimum 1:2 R:R ratio for prop firm compliance
-    if (rrRatio < 2.0) {
+    const entryAnchor = lastHigh?.price ?? lastHighZone?.high;
+    const slAnchor = lastLow?.price ?? lastLowZone?.low;
+    if (!Number.isFinite(entryAnchor as number) || !Number.isFinite(slAnchor as number)) {
       return {
         direction: "WAIT",
         entry_price: null,
@@ -361,76 +525,114 @@ const calculateEntrySignal = (
         take_profit_1: null,
         take_profit_2: null,
         risk_reward_ratio: "N/A",
-        rationale: `POOR R:R. Current ratio 1:${rrRatio.toFixed(1)} (need minimum 1:2.0). Structure too tight. Wait for better setup with wider targets.`,
+        rationale: "Bullish bias detected but breakout requires a clear swing high and prior swing low.",
         confluence_score: confluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
-        probability: confluence,
         prop_firm_compliant: false,
       };
     }
-    
-    const isCompliant = rrRatio >= 2.0;
+
+    const entryPrice = roundToTickUp((entryAnchor as number) + buffer, tickSize);
+    const stopLoss = roundToTickDown((slAnchor as number) - buffer, tickSize);
+    const swingTargets = pricedHighs
+      .map((h) => h.price)
+      .filter((p) => p > entryPrice)
+      .sort((a, b) => a - b);
+    const targets = selectTargets("LONG", entryPrice, swingTargets, psychStep, tickSize);
+
+    if (!targets) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: "No valid breakout targets above the swing high. Need a higher swing or nearby psych level.",
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
+    const ordered = ensureStrictOrdering("LONG", entryPrice, stopLoss, targets.tp1, targets.tp2, tickSize);
+    const risk = entryPrice - ordered.sl;
+    const reward = ordered.tp1 - entryPrice;
+    const rrRatio = reward / Math.max(risk, tickSize);
+
+    let finalTp2 = ordered.tp2;
+    let rrFinal = rrRatio;
+    let extensionNote: string | undefined;
+
+    if (rrRatio < 1.5) {
+      const higherTarget = higherTfHighs.find((p) => p > ordered.tp1 && p > entryPrice);
+      if (Number.isFinite(higherTarget)) {
+        finalTp2 = roundToTick(higherTarget as number, tickSize);
+        rrFinal = (finalTp2 - entryPrice) / Math.max(risk, tickSize);
+        extensionNote = "TP extended to higher timeframe swing for better R:R.";
+      }
+    }
+
+    if (rrFinal < 1.5) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5). Wait for wider breakout targets or higher timeframe extension.`,
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
     const qualityScore = confluence >= 85 ? "STRONG" : confluence >= 75 ? "MEDIUM" : "WEAK" as SignalQuality;
+    const executionPlan = formatExecutionPlan({
+      direction: "LONG",
+      entry: entryPrice,
+      sl: ordered.sl,
+      tp1: ordered.tp1,
+      tp2: ordered.tp2,
+      tickSize,
+      entryMode: "STOP",
+      entryReference: `Buy stop above ${lastHigh?.label || "swing high"}`,
+    });
 
     return {
       direction: "LONG",
       entry_price: entryPrice,
-      stop_loss: stopLoss,
-      take_profit_1: tp1,
-      take_profit_2: tp2,
-      risk_reward_ratio: `1:${rrRatio.toFixed(1)}`,
-      rationale: `✅ LONG [${qualityScore}]. Entry ${entryPrice}, SL ${stopLoss} (below ${lastLow.label || "swing"}). TP1 ${tp1}, TP2 ${tp2}. R:R 1:${rrRatio.toFixed(1)}. Confluence ${confluence}/100. Prop-firm compliant.`,
+      stop_loss: ordered.sl,
+      take_profit_1: ordered.tp1,
+      take_profit_2: finalTp2,
+      risk_reward_ratio: `1:${rrFinal.toFixed(1)}`,
+      rationale: formatVipRationale({
+        direction: "LONG",
+        quality: qualityScore,
+        entry: entryPrice,
+        sl: ordered.sl,
+        tp1: ordered.tp1,
+        tp2: finalTp2,
+        rr: `1:${rrFinal.toFixed(1)}`,
+        confluence,
+        plan: executionPlan,
+        anchorLabel: `below ${lastLow?.label || "swing low"}`,
+      }) + (extensionNote ? ` | ${extensionNote}` : ""),
       confluence_score: confluence,
       signal_quality: qualityScore,
       pattern_type: patternType,
-      probability: confluence,
-      prop_firm_compliant: isCompliant,
+      prop_firm_compliant: rrFinal >= 1.5,
     };
   }
 
   if (bias === "Bearish") {
-    // Need at least a high to trade from
-    if (!lastHigh?.price || allLows.length === 0) {
-      return {
-        direction: "SHORT",
-        entry_price: null,
-        stop_loss: null,
-        take_profit_1: null,
-        take_profit_2: null,
-        risk_reward_ratio: "N/A",
-        rationale: "Bearish bias detected but cannot calculate precise entry - swing structure incomplete.",
-        confluence_score: confluence,
-        signal_quality: "INVALID",
-        pattern_type: patternType,
-        probability: confluence,
-        prop_firm_compliant: false,
-      };
-    }
-
-    // Entry: Near current price or at swing high - small buffer
-    const entryPrice = roundToPip(refPrice);
-    
-    // SL: Above last swing high (respecting structure) with 3% buffer
-    const buffer = Math.abs(lastHigh.price - refPrice) * 0.03; // Tighter 3% buffer
-    const stopLoss = roundToPip(lastHigh.price + buffer);
-    
-    // TP1: Next swing low below entry (aim for 1:2 minimum)
-    const tp1Low = allLows.find(l => (l.price || 0) < entryPrice);
-    const minTp1 = roundToPip(entryPrice - (stopLoss - entryPrice) * 2.0); // Minimum 1:2
-    const tp1 = tp1Low?.price ? roundToPip(Math.min(tp1Low.price, minTp1)) : minTp1;
-    
-    // TP2: Lower swing low (aim for 1:3+)
-    const tp2Low = allLows.find(l => (l.price || 0) < tp1 - 0.0015);
-    const minTp2 = roundToPip(entryPrice - (stopLoss - entryPrice) * 3.0); // Minimum 1:3
-    const tp2 = tp2Low?.price ? roundToPip(Math.min(tp2Low.price, minTp2)) : minTp2;
-    
-    const risk = stopLoss - entryPrice;
-    const reward = entryPrice - tp1;
-    const rrRatio = reward / risk;
-    
-    // STRICT: Enforce minimum 1:2 R:R ratio for prop firm compliance
-    if (rrRatio < 2.0) {
+    const entryAnchor = lastLow?.price ?? lastLowZone?.low;
+    const slAnchor = lastHigh?.price ?? lastHighZone?.high;
+    if (!Number.isFinite(entryAnchor as number) || !Number.isFinite(slAnchor as number)) {
       return {
         direction: "WAIT",
         entry_price: null,
@@ -438,38 +640,114 @@ const calculateEntrySignal = (
         take_profit_1: null,
         take_profit_2: null,
         risk_reward_ratio: "N/A",
-        rationale: `POOR R:R. Current ratio 1:${rrRatio.toFixed(1)} (need minimum 1:2.0). Structure too tight. Wait for better setup with wider targets.`,
+        rationale: "Bearish bias detected but breakout requires a clear swing low and prior swing high.",
         confluence_score: confluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
-        probability: confluence,
         prop_firm_compliant: false,
       };
     }
-    
-    const isCompliant = rrRatio >= 2.0;
+
+    const entryPrice = roundToTickDown((entryAnchor as number) - buffer, tickSize);
+    const stopLoss = roundToTickUp((slAnchor as number) + buffer, tickSize);
+    const swingTargets = pricedLows
+      .map((l) => l.price)
+      .filter((p) => p < entryPrice)
+      .sort((a, b) => b - a);
+    const targets = selectTargets("SHORT", entryPrice, swingTargets, psychStep, tickSize);
+
+    if (!targets) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: "No valid breakout targets below the swing low. Need a lower swing or nearby psych level.",
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
+    const ordered = ensureStrictOrdering("SHORT", entryPrice, stopLoss, targets.tp1, targets.tp2, tickSize);
+    const risk = ordered.sl - entryPrice;
+    const reward = entryPrice - ordered.tp1;
+    const rrRatio = reward / Math.max(risk, tickSize);
+
+    let finalTp2 = ordered.tp2;
+    let rrFinal = rrRatio;
+    let extensionNote: string | undefined;
+
+    if (rrRatio < 1.5) {
+      const higherTarget = higherTfLows.slice().reverse().find((p) => p < ordered.tp1 && p < entryPrice);
+      if (Number.isFinite(higherTarget)) {
+        finalTp2 = roundToTick(higherTarget as number, tickSize);
+        rrFinal = (entryPrice - finalTp2) / Math.max(risk, tickSize);
+        extensionNote = "TP extended to higher timeframe swing for better R:R.";
+      }
+    }
+
+    if (rrFinal < 1.5) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5). Wait for wider breakout targets or higher timeframe extension.`,
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
     const qualityScore = confluence >= 85 ? "STRONG" : confluence >= 75 ? "MEDIUM" : "WEAK" as SignalQuality;
+    const executionPlan = formatExecutionPlan({
+      direction: "SHORT",
+      entry: entryPrice,
+      sl: ordered.sl,
+      tp1: ordered.tp1,
+      tp2: ordered.tp2,
+      tickSize,
+      entryMode: "STOP",
+      entryReference: `Sell stop below ${lastLow?.label || "swing low"}`,
+    });
 
     return {
       direction: "SHORT",
       entry_price: entryPrice,
-      stop_loss: stopLoss,
-      take_profit_1: tp1,
-      take_profit_2: tp2,
-      risk_reward_ratio: `1:${rrRatio.toFixed(1)}`,
-      rationale: `✅ SHORT [${qualityScore}]. Entry ${entryPrice}, SL ${stopLoss} (above ${lastHigh.label || "swing"}). TP1 ${tp1}, TP2 ${tp2}. R:R 1:${rrRatio.toFixed(1)}. Confluence ${confluence}/100. Prop-firm compliant.`,
+      stop_loss: ordered.sl,
+      take_profit_1: ordered.tp1,
+      take_profit_2: finalTp2,
+      risk_reward_ratio: `1:${rrFinal.toFixed(1)}`,
+      rationale: formatVipRationale({
+        direction: "SHORT",
+        quality: qualityScore,
+        entry: entryPrice,
+        sl: ordered.sl,
+        tp1: ordered.tp1,
+        tp2: finalTp2,
+        rr: `1:${rrFinal.toFixed(1)}`,
+        confluence,
+        plan: executionPlan,
+        anchorLabel: `above ${lastHigh?.label || "swing high"}`,
+      }) + (extensionNote ? ` | ${extensionNote}` : ""),
       confluence_score: confluence,
       signal_quality: qualityScore,
       pattern_type: patternType,
-      probability: confluence,
-      prop_firm_compliant: isCompliant,
+      prop_firm_compliant: rrFinal >= 1.5,
     };
   }
 
   return undefined;
 };
 
-export const buildAnalysis = (state: ChartState): AnalysisResponse => {
+export const buildAnalysis = (state: ChartState, topDownStates?: ChartState[]): AnalysisResponse => {
   const bias = inferBias(state);
 
   const structure: Structure = {
@@ -484,7 +762,12 @@ export const buildAnalysis = (state: ChartState): AnalysisResponse => {
   };
 
   const key_levels = buildKeyLevels(state.swings);
-  const plan = buildSniperPlan(bias, state, structure);
+  const higherTimeframe =
+    topDownStates && topDownStates.length > 1
+      ? topDownStates[topDownStates.length - 2]
+      : undefined;
+
+  const plan = buildSniperPlan(bias, state, structure, higherTimeframe);
   const confidence = computeConfidence(state);
 
   const notes: string[] = [];

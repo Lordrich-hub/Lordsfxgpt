@@ -65,8 +65,9 @@ const demoChartStates: ChartState[] = [
 ];
 
 export const generateDemoAnalysis = (): AnalysisResponse => {
-  // Pick random demo state
-  const chartState = demoChartStates[Math.floor(Math.random() * demoChartStates.length)];
+  // Deterministic demo state selection (no randomness).
+  // This keeps behavior stable in fallback/demo mode and avoids "guessy" outputs.
+  const chartState = demoChartStates[0];
 
   const bias =
     chartState.trend_hint === "bullish"
@@ -188,8 +189,9 @@ export const generateDemoAnalysis = (): AnalysisResponse => {
     meta: {
       pair: chartState.pair || "unknown",
       timeframe: chartState.timeframe || "unknown",
-      source: "Demo Mode (no API call)",
-      notes: chartState.notes || "Synthetic demo analysis",
+      source: "Demo (synthetic example)",
+      notes:
+        "Synthetic example output. This is not derived from your uploaded chart. Configure an AI provider to analyze real screenshots.",
     },
     bias: {
       state: bias,

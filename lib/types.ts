@@ -45,9 +45,8 @@ export interface EntrySignal {
   risk_reward_ratio: string;
   rationale: string;
   confluence_score?: number; // 0-100: higher = more probable
-  signal_quality?: SignalQuality; // STRONG = 70%+ win rate expected
+  signal_quality?: SignalQuality; // Qualitative label derived from confluence thresholds
   pattern_type?: PatternType; // Type of setup detected
-  probability?: number; // Estimated win probability (%)
   prop_firm_compliant?: boolean; // Meets max DD/risk limits
 }
 

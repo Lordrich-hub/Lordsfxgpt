@@ -9,3 +9,4 @@ pnpm-debug.log*
 dist
 .DS_Store
 .vercel
+production

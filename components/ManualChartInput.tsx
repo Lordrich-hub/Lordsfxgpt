@@ -34,7 +34,16 @@ export function ManualChartInput({ onSubmit, isLoading }: Props) {
         const label = parts[0];
         const zone = parts.slice(1).join(" ");
         const type = label.includes("H") || label.toLowerCase().includes("high") ? "SwingHigh" : "SwingLow";
-        return { type: type as "SwingHigh" | "SwingLow", label, zone };
+
+        const priceMatch = zone.match(/-?\d+(?:\.\d+)?/);
+        const price = priceMatch ? Number(priceMatch[0]) : undefined;
+
+        return {
+          type: type as "SwingHigh" | "SwingLow",
+          label,
+          zone,
+          price: Number.isFinite(price) ? price : undefined,
+        };
       });
 
     const chartState: ChartState = {
@@ -75,8 +84,10 @@ export function ManualChartInput({ onSubmit, isLoading }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-muted mb-1">Timeframe</label>
+          <label htmlFor="timeframe" className="block text-sm font-medium text-muted mb-1">Timeframe</label>
           <select
+            id="timeframe"
+            title="Timeframe"
             value={timeframe}
             onChange={(e) => setTimeframe(e.target.value)}
             className="w-full px-3 py-2 rounded-lg border border-border bg-panel text-white focus:border-accent outline-none"
@@ -103,8 +114,10 @@ export function ManualChartInput({ onSubmit, isLoading }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-muted mb-1">Market Bias</label>
+          <label htmlFor="marketBias" className="block text-sm font-medium text-muted mb-1">Market Bias</label>
           <select
+            id="marketBias"
+            title="Market Bias"
             value={trendHint}
             onChange={(e) => setTrendHint(e.target.value as any)}
             className="w-full px-3 py-2 rounded-lg border border-border bg-panel text-white focus:border-accent outline-none"
@@ -131,8 +144,10 @@ export function ManualChartInput({ onSubmit, isLoading }: Props) {
 
       <div className="grid gap-4 md:grid-cols-3">
         <div>
-          <label className="block text-sm font-medium text-muted mb-1">Recent Break Type</label>
+          <label htmlFor="recentBreakType" className="block text-sm font-medium text-muted mb-1">Recent Break Type</label>
           <select
+            id="recentBreakType"
+            title="Recent Break Type"
             value={breakType}
             onChange={(e) => setBreakType(e.target.value as any)}
             className="w-full px-3 py-2 rounded-lg border border-border bg-panel text-white focus:border-accent outline-none"

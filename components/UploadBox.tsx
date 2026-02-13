@@ -39,7 +39,8 @@ export function UploadBox({ onFilesSelected, previewUrls }: Props) {
         for (const type of item.types) {
           if (type.startsWith("image/")) {
             const blob = await item.getType(type);
-            const file = new File([blob], "pasted-image" + type.replace("image", ""), { type });
+            const ext = type.split("/")[1] || "png";
+            const file = new File([blob], `pasted-image.${ext}`, { type });
             handleFiles([file]);
             return;
           }
@@ -88,14 +89,22 @@ export function UploadBox({ onFilesSelected, previewUrls }: Props) {
           <button
             type="button"
             className="rounded-lg bg-accent/10 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/20"
-            onClick={() => inputRef.current?.click()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
           >
             Choose file
           </button>
           <button
             type="button"
             className="rounded-lg border border-border px-4 py-2 text-sm text-muted hover:border-accent hover:text-accent"
-            onClick={onPaste}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void onPaste();
+            }}
           >
             Paste from clipboard
           </button>

@@ -2,35 +2,91 @@ import { NextResponse } from "next/server";
 import { getOpenAIClient } from "@/lib/openai";
 import { visionPrompt } from "@/lib/visionPrompt";
 import { buildAnalysis } from "@/lib/structureEngine";
+import { generateDemoAnalysis } from "@/lib/demoAnalyzer";
 import { ChartState, TopDownFrame } from "@/lib/types";
+import { z } from "zod";
 
 export const runtime = "nodejs";
 
 const MAX_SIZE = 8 * 1024 * 1024; // 8MB
 
+const ChartStateSchema: z.ZodType<ChartState> = z.object({
+  pair: z.string().optional(),
+  timeframe: z.string().optional(),
+  current_price: z.number().finite().optional(),
+  price_region: z.string().optional(),
+  trend_hint: z.enum(["bullish", "bearish", "range", "transition", "unknown"]),
+  swings: z
+    .array(
+      z.object({
+        type: z.enum(["SwingHigh", "SwingLow"]),
+        label: z.string(),
+        zone: z.string(),
+        price: z.number().finite().optional(),
+      })
+    ),
+  breaks: z
+    .array(
+      z.object({
+        type: z.enum(["bos", "shift", "none"]),
+        confirmed: z.boolean(),
+        description: z.string().optional(),
+      })
+    ),
+  range: z
+    .object({
+      hasRange: z.boolean(),
+      topZone: z.string().optional(),
+      bottomZone: z.string().optional(),
+      falseBreaks: z.boolean().optional(),
+    }),
+  chop_detected: z.boolean().optional(),
+  retest_present: z.boolean().optional(),
+  notes: z.string().optional(),
+  top_down: z
+    .array(
+      z.object({
+        timeframe: z.string(),
+        bias: z.union([
+          z.enum(["bullish", "bearish", "range", "transition", "unknown"]),
+          z.enum(["Bullish", "Bearish", "Range", "Transition"]),
+        ]),
+        key_level: z.string().optional(),
+        narrative: z.string().optional(),
+      })
+    )
+    .optional(),
+});
+
+function demoFallback(reason: string) {
+  const demo = generateDemoAnalysis();
+  return {
+    ...demo,
+    meta: {
+      ...demo.meta,
+      source: "Demo Mode (fallback)",
+      notes: `${demo.meta.notes}${reason ? ` | ${reason}` : ""}`,
+    },
+  };
+}
+
 export async function POST(req: Request) {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY?.trim();
     
     if (!apiKey) {
-      console.error("[ANALYZE] OPENAI_API_KEY is missing!");
-      return NextResponse.json(
-        { error: "AI service not configured. Please contact support." },
-        { status: 500 }
-      );
+      return NextResponse.json(demoFallback("OPENAI_API_KEY missing"));
     }
-
-    console.log("[ANALYZE] API Key found, length:", apiKey.length);
     
     // Get OpenAI client inside the function
     const openai = getOpenAIClient();
-    console.log("[ANALYZE] OpenAI client initialized");
 
     const contentType = req.headers.get("content-type") || "";
 
     // Handle direct chart state submission (from manual input)
     if (contentType.includes("application/json")) {
-      const chartState = (await req.json()) as ChartState;
+      const raw = await req.json();
+      const chartState = ChartStateSchema.parse(raw);
       const analysis = buildAnalysis(chartState);
       return NextResponse.json(analysis);
     }
@@ -53,30 +109,16 @@ export async function POST(req: Request) {
       }
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: "AI service not configured. Please use manual input or contact support." },
-        { status: 500 }
-      );
-    }
-
-    if (process.env.OPENAI_API_KEY.includes("your_openai_key_here") || process.env.OPENAI_API_KEY.length < 20) {
-      return NextResponse.json(
-        { error: "AI service configuration invalid. Please contact support." },
-        { status: 500 }
-      );
+    if (apiKey.includes("your_openai_key_here") || apiKey.length < 20) {
+      return NextResponse.json(demoFallback("OPENAI_API_KEY invalid"));
     }
 
     const chartStates: ChartState[] = [];
-    const profileRaw = form.get("profile");
-    const profile = typeof profileRaw === "string" ? (profileRaw.toUpperCase() as any) : undefined;
 
     for (const f of files) {
       try {
         const base64 = Buffer.from(await f.arrayBuffer()).toString("base64");
         const imageUrl = `data:${f.type};base64,${base64}`;
-
-        console.log("[ANALYZE] Calling OpenAI API...");
         const response = await openai.chat.completions.create({
           model: "gpt-4o",
           messages: [
@@ -92,22 +134,21 @@ export async function POST(req: Request) {
           response_format: { type: "json_object" },
           max_tokens: 2000,
         });
-        console.log("[ANALYZE] OpenAI API call successful");
 
         const text = response.choices[0]?.message?.content;
         if (!text) {
           throw new Error("Empty response from AI Vision service");
         }
         
-        let parsed;
+        let parsed: unknown;
         try {
           parsed = JSON.parse(text);
         } catch (parseErr) {
-          console.error("JSON parse error:", text.substring(0, 200));
           throw new Error("Failed to parse AI response as JSON");
         }
-        
-        chartStates.push(parsed as ChartState);
+
+        const validated = ChartStateSchema.parse(parsed);
+        chartStates.push(validated);
       } catch (fileError: any) {
         console.error(`Error processing file ${f.name}:`, {
           message: fileError?.message,
@@ -115,6 +156,28 @@ export async function POST(req: Request) {
           type: fileError?.type,
           code: fileError?.code,
         });
+
+        const msg = String(fileError?.message || "").toLowerCase();
+        const code = String(fileError?.code || "");
+
+        const isNetworkish =
+          code === "ECONNRESET" ||
+          code === "ENOTFOUND" ||
+          code === "ECONNREFUSED" ||
+          msg.includes("fetch failed") ||
+          msg.includes("connection") ||
+          msg.includes("network") ||
+          msg.includes("econn") ||
+          msg.includes("enotfound");
+
+        const isTimeout = msg.includes("timeout") || msg.includes("timed out");
+        const isRateLimit = fileError?.status === 429 || msg.includes("429");
+
+        if (isNetworkish || isTimeout || isRateLimit) {
+          console.warn("[ANALYZE] Falling back to demo analysis due to OpenAI connectivity issue");
+          return NextResponse.json(demoFallback("OpenAI unreachable; fallback used"));
+        }
+
         throw fileError;
       }
     }
@@ -128,27 +191,40 @@ export async function POST(req: Request) {
       narrative: cs.notes,
     }));
 
-    const analysis = buildAnalysis({ ...primary, top_down: topDown });
+    const analysis = buildAnalysis({ ...primary, top_down: topDown }, chartStates);
 
     return NextResponse.json(analysis);
   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid chart_state payload. Ensure required fields are present and numeric prices are numbers (not strings).",
+          issues: error.issues,
+        },
+        { status: 422 }
+      );
+    }
+
     console.error("/api/analyze error:", {
       message: error?.message,
       status: error?.status,
+      code: error?.code,
       type: error?.constructor?.name,
+      fullError: JSON.stringify(error, null, 2),
     });
     
     // Handle AI service errors
     if (error?.status === 401 || error?.message?.includes("401")) {
       return NextResponse.json(
-        { error: "❌ AI service authentication failed. Please contact support for assistance." },
+        { error: "AI service authentication failed. Invalid API key." },
         { status: 500 }
       );
     }
     
     if (error?.status === 429 || error?.message?.includes("429")) {
       return NextResponse.json(
-        { error: "⏳ Service temporarily busy. Please wait 60 seconds and try again." },
+        { error: "Service temporarily busy. Please wait 60 seconds and try again." },
         { status: 500 }
       );
     }
@@ -161,28 +237,28 @@ export async function POST(req: Request) {
       error?.message?.toLowerCase().includes("connection")
     ) {
       return NextResponse.json(
-        { error: "Connection error: AI service unreachable. Please retry in a minute." },
+        { error: `Connection error: ${error?.message || "Network unreachable"}. Check that OpenAI API is accessible.` },
         { status: 500 }
       );
     }
 
     if (error?.message?.includes("Empty response")) {
       return NextResponse.json(
-        { error: "🖼️ Chart image unclear. Please upload a clearer screenshot and try again." },
+        { error: "Chart image unclear. Please upload a clearer screenshot and try again." },
         { status: 500 }
       );
     }
 
     if (error?.message?.includes("JSON")) {
       return NextResponse.json(
-        { error: "⚠️ Analysis failed. Please try uploading a different chart image." },
+        { error: "Analysis failed. Please try uploading a different chart image." },
         { status: 500 }
       );
     }
 
     if (error?.message?.includes("Timeout") || error?.message?.includes("timeout")) {
       return NextResponse.json(
-        { error: "⏱️ Request timed out. AI service is processing slowly. Please try again." },
+        { error: "Request timed out. AI service is processing slowly. Please try again." },
         { status: 500 }
       );
     }

@@ -1,27 +1,27 @@
 import OpenAI from "openai";
 
-let cachedClient: OpenAI | null = null;
-
 export function getOpenAIClient(): OpenAI {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY environment variable is not set");
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY environment variable is not set (or is empty)");
   }
 
-  if (!cachedClient) {
-    cachedClient = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      timeout: 60000,
-      maxRetries: 2,
-    });
-  }
-
-  return cachedClient;
+  // Create a fresh client each time - don't cache
+  // This ensures we always use the latest env var
+  return new OpenAI({
+    apiKey: apiKey,
+    timeout: 60000,
+    maxRetries: 2,
+  });
 }
 
-// For backward compatibility
-export const openai = new Proxy({} as OpenAI, {
-  get: (target, prop) => {
-    return Reflect.get(getOpenAIClient(), prop);
+// For backward compatibility if needed
+export const openai = {
+  chat: {
+    completions: {
+      create: (params: any) => getOpenAIClient().chat.completions.create(params),
+    },
   },
-});
+} as any;
 

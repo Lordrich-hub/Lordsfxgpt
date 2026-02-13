@@ -15,6 +15,42 @@ const biasColors: Record<string, string> = {
   Transition: "bg-sky-500/20 text-sky-300",
 };
 
+const widthClassByStep5: Record<number, string> = {
+  0: "w-[0%]",
+  5: "w-[5%]",
+  10: "w-[10%]",
+  15: "w-[15%]",
+  20: "w-[20%]",
+  25: "w-[25%]",
+  30: "w-[30%]",
+  35: "w-[35%]",
+  40: "w-[40%]",
+  45: "w-[45%]",
+  50: "w-[50%]",
+  55: "w-[55%]",
+  60: "w-[60%]",
+  65: "w-[65%]",
+  70: "w-[70%]",
+  75: "w-[75%]",
+  80: "w-[80%]",
+  85: "w-[85%]",
+  90: "w-[90%]",
+  95: "w-[95%]",
+  100: "w-[100%]",
+};
+
+function percentToWidthClass(percent: number): string {
+  const clamped = Math.max(0, Math.min(100, percent));
+  const snapped = Math.round(clamped / 5) * 5;
+  return widthClassByStep5[snapped] ?? widthClassByStep5[0];
+}
+
+function formatPrice(value: number): string {
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: 6,
+  });
+}
+
 export function ResultPanel({ data, isLoading, error }: Props) {
   if (isLoading) {
     return (
@@ -53,10 +89,14 @@ export function ResultPanel({ data, isLoading, error }: Props) {
         <div className="flex items-center gap-2 text-sm text-muted">
           <span>Confidence</span>
           <div className="h-2 w-32 overflow-hidden rounded-full bg-border">
-            <div className="h-full bg-accent" style={{ width: `${conf}%` }} />
+            <div className={`h-full bg-accent ${percentToWidthClass(Number(conf))}`} />
           </div>
           <span className="text-accent font-semibold">{conf}</span>
         </div>
+      </div>
+
+      <div className="text-xs text-muted">
+        Source: <span className="text-slate-200">{data.meta.source}</span>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -88,7 +128,9 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                   <span className="text-muted">•</span>
                   <span>
                     {s.label} ({s.type}) @ {s.zone}
-                    {s.price && <span className="ml-2 font-mono text-accent text-xs">({s.price.toFixed(5)})</span>}
+                    {typeof s.price === "number" && (
+                      <span className="ml-2 font-mono text-accent text-xs">({formatPrice(s.price)})</span>
+                    )}
                   </span>
                 </li>
               ))}
@@ -151,7 +193,7 @@ export function ResultPanel({ data, isLoading, error }: Props) {
           {data.sniper_plan.entry_signal && (
             <div className="mt-4 pt-4 border-t border-border">
               <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold text-accent">💎 Entry Signal</h4>
+                <h4 className="font-semibold text-accent">Entry Signal</h4>
                 <div className="flex gap-2 items-center">
                   {data.sniper_plan.entry_signal.signal_quality && (
                     <span className={`px-2 py-0.5 text-xs rounded font-semibold ${
@@ -200,8 +242,7 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                         className={`h-full ${
                           data.sniper_plan.entry_signal.confluence_score >= 80 ? 'bg-emerald-500' :
                           data.sniper_plan.entry_signal.confluence_score >= 70 ? 'bg-amber-500' : 'bg-rose-500'
-                        }`}
-                        style={{ width: `${data.sniper_plan.entry_signal.confluence_score}%` }}
+                        } ${percentToWidthClass(Number(data.sniper_plan.entry_signal.confluence_score))}`}
                       />
                     </div>
                   </div>
@@ -219,25 +260,25 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                     <div className="flex items-center justify-between text-sm gap-3">
                       <div>
                         <p className="text-xs text-muted">Entry</p>
-                        <p className="font-mono text-accent font-semibold">{Math.round(data.sniper_plan.entry_signal.entry_price * 10000) / 10000}</p>
+                        <p className="font-mono text-accent font-semibold">{formatPrice(data.sniper_plan.entry_signal.entry_price)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted">SL</p>
-                        <p className="font-mono text-rose-400 font-semibold">{Math.round((data.sniper_plan.entry_signal.stop_loss || 0) * 10000) / 10000}</p>
+                        <p className="font-mono text-rose-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.stop_loss || 0)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted">TP1</p>
-                        <p className="font-mono text-emerald-400 font-semibold">{Math.round((data.sniper_plan.entry_signal.take_profit_1 || 0) * 10000) / 10000}</p>
+                        <p className="font-mono text-emerald-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.take_profit_1 || 0)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted">TP2</p>
-                        <p className="font-mono text-emerald-400 font-semibold">{Math.round((data.sniper_plan.entry_signal.take_profit_2 || 0) * 10000) / 10000}</p>
+                        <p className="font-mono text-emerald-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.take_profit_2 || 0)}</p>
                       </div>
                     </div>
                   </div>
                 ) : (
                   <div className="bg-amber-500/10 border border-amber-500/30 rounded p-3 text-center">
-                    <p className="text-sm text-amber-300">⚠️ No precise entry levels available</p>
+                    <p className="text-sm text-amber-300">No precise entry levels available</p>
                   </div>
                 )}
 

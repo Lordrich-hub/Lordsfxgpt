@@ -5,21 +5,89 @@ import { UploadBox } from "@/components/UploadBox";
 import { ResultPanel } from "@/components/ResultPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { RiskCalculator } from "@/components/RiskCalculator";
+import { AuthBar } from "@/components/AuthBar";
 import { AnalysisResponse } from "@/lib/types";
-import { loadHistory, saveToHistory } from "@/lib/storage";
 
 export default function Page() {
   const [data, setData] = useState<AnalysisResponse | null>(null);
   const [isLoading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [history, setHistory] = useState<AnalysisResponse[]>([]);
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [historyEmptyMessage, setHistoryEmptyMessage] = useState<string | undefined>(undefined);
   const [files, setFiles] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const urlBucketRef = useRef<string[]>([]);
 
   useEffect(() => {
-    setHistory(loadHistory());
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/enabled", { cache: "no-store" });
+        const json = (await res.json().catch(() => null)) as { enabled?: boolean } | null;
+        if (!mounted) return;
+        setAuthEnabled(Boolean(json?.enabled));
+      } catch {
+        if (!mounted) return;
+        setAuthEnabled(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
+
+  const loadAccountHistory = async (enabled: boolean) => {
+    if (!enabled) {
+      setHistory([]);
+      setHistoryEmptyMessage("Sign in to save and view your analysis history.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/history", { cache: "no-store" });
+      if (res.status === 401) {
+        setHistory([]);
+        setHistoryEmptyMessage("Sign in to save and view your analysis history.");
+        return;
+      }
+      if (!res.ok) {
+        setHistory([]);
+        setHistoryEmptyMessage("History is unavailable right now.");
+        return;
+      }
+      const items = (await res.json()) as AnalysisResponse[];
+      setHistory(Array.isArray(items) ? items : []);
+      setHistoryEmptyMessage(undefined);
+    } catch {
+      setHistory([]);
+      setHistoryEmptyMessage("History is unavailable right now.");
+    }
+  };
+
+  const clearAccountHistory = async () => {
+    if (!authEnabled) return;
+    try {
+      const res = await fetch("/api/history", { method: "DELETE" });
+      if (res.status === 401) {
+        setHistory([]);
+        setHistoryEmptyMessage("Sign in to save and view your analysis history.");
+        return;
+      }
+      if (!res.ok) {
+        setHistoryEmptyMessage("History could not be cleared right now.");
+        return;
+      }
+      setHistory([]);
+      setHistoryEmptyMessage("History cleared.");
+    } catch {
+      setHistoryEmptyMessage("History could not be cleared right now.");
+    }
+  };
+
+  useEffect(() => {
+    void loadAccountHistory(authEnabled);
+  }, [authEnabled]);
 
   useEffect(() => {
     return () => {
@@ -76,18 +144,32 @@ export default function Page() {
       }
       const json = (await res.json()) as AnalysisResponse;
       setData(json);
-      saveToHistory(json);
-      setHistory(loadHistory());
+
+      if (authEnabled) {
+        const saveRes = await fetch("/api/history", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(json),
+        });
+
+        // If the user isn't signed in, don't treat it as an app error.
+        if (saveRes.status !== 401) {
+          await saveRes.json().catch(() => null);
+        }
+
+        void loadAccountHistory(true);
+      }
+
       clearStack();
     } catch (err: any) {
       let errorMsg = "Analysis failed";
       
       if (err.name === "AbortError") {
-        errorMsg = "⏱️ Request timed out (90s). Service is taking too long. Please try again.";
+        errorMsg = "Request timed out (90s). The service is taking too long. Please try again.";
       } else if (err instanceof TypeError && err.message.includes("fetch")) {
-        errorMsg = "🔌 Network error: Cannot reach server. Make sure the app is running.";
+        errorMsg = "Network error: Cannot reach server. Make sure the app is running.";
       } else if (err.message?.includes("AI service")) {
-        errorMsg = "🔑 " + err.message;
+        errorMsg = err.message;
       } else if (err.message) {
         errorMsg = err.message;
       }
@@ -147,7 +229,7 @@ export default function Page() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-white">Chart{files.length > 1 ? "s" : ""} Selected</p>
-                  <p className="text-xs text-slate-400">Last chart = execution timeframe</p>
+                  <p className="text-xs text-slate-400">Last chart = entry/SL timeframe (lower TF)</p>
                 </div>
               </div>
               <button
@@ -181,7 +263,7 @@ export default function Page() {
                 </>
               ) : (
                 <>
-                  🚀 Generate Signal
+                  Generate Signal
                 </>
               )}
             </div>
@@ -203,13 +285,20 @@ export default function Page() {
           {/* Risk Calculator */}
           <div className="space-y-4 animate-fade-in">
             <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Account Management</h2>
+            <AuthBar enabled={authEnabled} />
             <RiskCalculator />
           </div>
 
           {/* History */}
           <div className="space-y-4 animate-fade-in animation-delay-100">
             <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Recent Analyses</h2>
-            <HistoryPanel items={history} onSelect={(item) => setData(item)} />
+            <HistoryPanel
+              items={history}
+              onSelect={(item) => setData(item)}
+              storageLabel={authEnabled ? "Stored to your account" : "Account history"}
+              emptyMessage={historyEmptyMessage}
+              onClear={authEnabled ? clearAccountHistory : undefined}
+            />
           </div>
 
           {/* Info Card */}
@@ -222,11 +311,11 @@ export default function Page() {
               </div>
               <div className="flex gap-3">
                 <span className="text-purple-400 font-bold flex-shrink-0">2.</span>
-                <p>Select your trading style (Scalp or Swing)</p>
+                <p>Click Generate Signal to run the analysis</p>
               </div>
               <div className="flex gap-3">
                 <span className="text-purple-400 font-bold flex-shrink-0">3.</span>
-                <p>Get professional-grade signals with entry, SL, and TP</p>
+                <p>Review bias, structure, and entry levels (if available)</p>
               </div>
             </div>
             <div className="pt-4 border-t border-slate-700/50">
