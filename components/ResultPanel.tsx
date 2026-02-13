@@ -51,6 +51,18 @@ function formatPrice(value: number): string {
   });
 }
 
+function getAlignmentCount(bias: string, frames?: AnalysisResponse["top_down"]): { aligned: number; total: number } {
+  if (!frames || !frames.length) return { aligned: 0, total: 0 };
+  if (bias !== "Bullish" && bias !== "Bearish") return { aligned: 0, total: frames.length };
+
+  const aligned = frames.filter((tf) => {
+    const tfBias = typeof tf.bias === "string" ? tf.bias.toLowerCase() : String(tf.bias).toLowerCase();
+    return bias === "Bullish" ? tfBias === "bullish" : tfBias === "bearish";
+  }).length;
+
+  return { aligned, total: frames.length };
+}
+
 export function ResultPanel({ data, isLoading, error }: Props) {
   if (isLoading) {
     return (
@@ -78,6 +90,7 @@ export function ResultPanel({ data, isLoading, error }: Props) {
 
   const bias = data.bias.state;
   const conf = data.confidence.score;
+  const alignment = getAlignmentCount(bias, data.top_down);
 
   return (
     <div className="space-y-4 rounded-2xl border border-border bg-panel/60 p-6">
@@ -234,7 +247,7 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                 {data.sniper_plan.entry_signal.confluence_score !== undefined && (
                   <div className="bg-zinc-900/50 p-2 rounded">
                     <div className="flex justify-between items-center mb-1">
-                      <p className="text-xs text-muted">Confluence Score</p>
+                      <p className="text-xs text-muted">TP Hit Chance</p>
                       <p className="text-sm font-semibold text-accent">{data.sniper_plan.entry_signal.confluence_score}/100</p>
                     </div>
                     <div className="h-2 w-full bg-border rounded-full overflow-hidden">
@@ -245,6 +258,11 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                         } ${percentToWidthClass(Number(data.sniper_plan.entry_signal.confluence_score))}`}
                       />
                     </div>
+                    {alignment.total > 0 && (
+                      <div className="mt-2 text-[11px] text-muted">
+                        TF alignment: {alignment.aligned}/{alignment.total}
+                      </div>
+                    )}
                   </div>
                 )}
 
