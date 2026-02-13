@@ -17,6 +17,34 @@ const parseZoneBounds = (zone: string | undefined): { low: number; high: number 
   return { low, high };
 };
 
+const getSwingNumericPrice = (swing: ChartSwing): number | undefined => {
+  if (typeof swing.price === "number" && Number.isFinite(swing.price)) return swing.price;
+  const bounds = parseZoneBounds(swing.zone);
+  if (!bounds) return undefined;
+  return swing.type === "SwingHigh" ? bounds.high : bounds.low;
+};
+
+const computeTimeframeAlignmentScore = (
+  bias: BiasState,
+  timeframes?: ChartState[]
+): { score: number; aligned: number; total: number } => {
+  if (!timeframes || !timeframes.length) return { score: 0, aligned: 0, total: 0 };
+
+  const relevant = timeframes.filter((tf) => tf.trend_hint !== "unknown");
+  if (!relevant.length) return { score: 0, aligned: 0, total: 0 };
+
+  const aligned = relevant.filter((tf) => {
+    if (bias === "Bullish") return tf.trend_hint === "bullish";
+    if (bias === "Bearish") return tf.trend_hint === "bearish";
+    return false;
+  }).length;
+
+  const total = relevant.length;
+  const ratio = aligned / Math.max(1, total);
+  const score = Math.round(ratio * 30);
+  return { score, aligned, total };
+};
+
 const ensureStrictOrdering = (direction: "LONG" | "SHORT", entry: number, sl: number, tp1: number, tp2: number, tick: number) => {
   if (direction === "LONG") {
     const fixedSl = sl >= entry ? roundToTickDown(entry - tick, tick) : sl;
@@ -242,7 +270,7 @@ const buildKeyLevels = (swings: ChartSwing[]): KeyLevel[] => {
   return levels;
 };
 
-const computeConfidence = (state: ChartState): { score: number; explanation: string } => {
+const computeConfidence = (state: ChartState, timeframes?: ChartState[]): { score: number; explanation: string } => {
   let score = 50;
   const reasons: string[] = [];
 
@@ -271,6 +299,12 @@ const computeConfidence = (state: ChartState): { score: number; explanation: str
   if (state.range.hasRange && state.range.falseBreaks) {
     score -= 10;
     reasons.push("Range with false breaks");
+  }
+
+  const alignment = computeTimeframeAlignmentScore(inferBias(state), timeframes);
+  if (alignment.total > 0) {
+    score += Math.round(alignment.score * 0.5);
+    reasons.push(`Timeframe alignment ${alignment.aligned}/${alignment.total}`);
   }
 
   return { score: clamp(score, 0, 100), explanation: reasons.join("; ") || "Baseline confidence" };
@@ -352,7 +386,13 @@ const identifyPatternType = (
   return "REVERSAL";
 };
 
-const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structure, higherTimeframe?: ChartState): { planType: PlanType; wait_for: string[]; trigger: string[]; invalidation: string[]; targets: string[]; entry_signal?: EntrySignal } => {
+const buildSniperPlan = (
+  bias: BiasState,
+  state: ChartState,
+  structure: Structure,
+  higherTimeframe?: ChartState,
+  topDownStates?: ChartState[]
+): { planType: PlanType; wait_for: string[]; trigger: string[]; invalidation: string[]; targets: string[]; entry_signal?: EntrySignal } => {
   const lastHigh = structure.recent_swings.filter((s) => s.type === "SwingHigh").at(-1);
   const lastLow = structure.recent_swings.filter((s) => s.type === "SwingLow").at(-1);
 
@@ -360,7 +400,7 @@ const buildSniperPlan = (bias: BiasState, state: ChartState, structure: Structur
   const targetCandidates = bias === "Bullish" ? (lastHigh?.zone ? [lastHigh.zone] : []) : bias === "Bearish" ? (lastLow?.zone ? [lastLow.zone] : []) : [];
 
   // Calculate entry signal with precise prices
-  const entrySignal = calculateEntrySignal(bias, state, lastHigh, lastLow, higherTimeframe);
+  const entrySignal = calculateEntrySignal(bias, state, lastHigh, lastLow, higherTimeframe, topDownStates);
 
   // No-trade when ranging and no confirmed break
   const hasConfirmedBreak = state.breaks.some((b) => b.confirmed && b.type !== "none");
@@ -420,28 +460,11 @@ const calculateEntrySignal = (
   state: ChartState,
   lastHigh: { type: SwingType; label: string; zone: string; price?: number } | undefined,
   lastLow: { type: SwingType; label: string; zone: string; price?: number } | undefined,
-  higherTimeframe?: ChartState
+  higherTimeframe?: ChartState,
+  topDownStates?: ChartState[]
 ): EntrySignal | undefined => {
-  const confluence = calculateConfluenceScore(bias, state, lastHigh, lastLow);
+  const baseConfluence = calculateConfluenceScore(bias, state, lastHigh, lastLow);
   const patternType = "BREAKOUT" as const;
-  const minConfluence = 75;
-
-  // Skip if below minimum confluence threshold
-  if (confluence < minConfluence) {
-    return {
-      direction: "WAIT",
-      entry_price: null,
-      stop_loss: null,
-      take_profit_1: null,
-      take_profit_2: null,
-      risk_reward_ratio: "N/A",
-      rationale: `Below threshold. Confluence ${confluence}/100 (minimum ${minConfluence}). Wait for a confirmed structure break and a clean retest.`,
-      confluence_score: confluence,
-      signal_quality: "INVALID",
-      pattern_type: patternType,
-      prop_firm_compliant: false,
-    };
-  }
 
   // Additional guard: breakouts only in directional conditions
   if (bias === "Range" || bias === "Transition") {
@@ -453,7 +476,7 @@ const calculateEntrySignal = (
       take_profit_2: null,
       risk_reward_ratio: "N/A",
       rationale: "Non-directional structure. Breakout signals require a clear bullish or bearish bias.",
-      confluence_score: confluence,
+      confluence_score: baseConfluence,
       signal_quality: "INVALID",
       pattern_type: patternType,
       prop_firm_compliant: false,
@@ -475,7 +498,7 @@ const calculateEntrySignal = (
       take_profit_2: null,
       risk_reward_ratio: "N/A",
       rationale: "Cannot determine prices from chart. Please ensure price scale is visible.",
-      confluence_score: confluence,
+      confluence_score: baseConfluence,
       signal_quality: "INVALID",
       pattern_type: patternType,
       prop_firm_compliant: false,
@@ -496,22 +519,26 @@ const calculateEntrySignal = (
   const buffer = tickSize * baseBufferTicks;
 
   const pricedHighs = state.swings
-    .filter((s) => s.type === "SwingHigh" && typeof s.price === "number" && Number.isFinite(s.price))
-    .map((s) => ({ ...s, price: s.price as number }));
+    .filter((s) => s.type === "SwingHigh")
+    .map((s) => ({ ...s, price: getSwingNumericPrice(s) }))
+    .filter((s) => typeof s.price === "number" && Number.isFinite(s.price)) as Array<ChartSwing & { price: number }>;
   const pricedLows = state.swings
-    .filter((s) => s.type === "SwingLow" && typeof s.price === "number" && Number.isFinite(s.price))
-    .map((s) => ({ ...s, price: s.price as number }));
+    .filter((s) => s.type === "SwingLow")
+    .map((s) => ({ ...s, price: getSwingNumericPrice(s) }))
+    .filter((s) => typeof s.price === "number" && Number.isFinite(s.price)) as Array<ChartSwing & { price: number }>;
 
   const psychStep = inferPsychStep(state, refPrice, tickSize);
 
   const higherTfHighs = higherTimeframe?.swings
-    .filter((s) => s.type === "SwingHigh" && typeof s.price === "number" && Number.isFinite(s.price))
-    .map((s) => s.price as number)
+    .filter((s) => s.type === "SwingHigh")
+    .map((s) => getSwingNumericPrice(s))
+    .filter((p): p is number => typeof p === "number" && Number.isFinite(p))
     .sort((a, b) => a - b) ?? [];
 
   const higherTfLows = higherTimeframe?.swings
-    .filter((s) => s.type === "SwingLow" && typeof s.price === "number" && Number.isFinite(s.price))
-    .map((s) => s.price as number)
+    .filter((s) => s.type === "SwingLow")
+    .map((s) => getSwingNumericPrice(s))
+    .filter((p): p is number => typeof p === "number" && Number.isFinite(p))
     .sort((a, b) => a - b) ?? [];
 
   if (bias === "Bullish") {
@@ -526,7 +553,7 @@ const calculateEntrySignal = (
         take_profit_2: null,
         risk_reward_ratio: "N/A",
         rationale: "Bullish bias detected but breakout requires a clear swing high and prior swing low.",
-        confluence_score: confluence,
+        confluence_score: baseConfluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
         prop_firm_compliant: false,
@@ -550,7 +577,7 @@ const calculateEntrySignal = (
         take_profit_2: null,
         risk_reward_ratio: "N/A",
         rationale: "No valid breakout targets above the swing high. Need a higher swing or nearby psych level.",
-        confluence_score: confluence,
+        confluence_score: baseConfluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
         prop_firm_compliant: false,
@@ -575,23 +602,10 @@ const calculateEntrySignal = (
       }
     }
 
-    if (rrFinal < 1.5) {
-      return {
-        direction: "WAIT",
-        entry_price: null,
-        stop_loss: null,
-        take_profit_1: null,
-        take_profit_2: null,
-        risk_reward_ratio: "N/A",
-        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5). Wait for wider breakout targets or higher timeframe extension.`,
-        confluence_score: confluence,
-        signal_quality: "INVALID",
-        pattern_type: patternType,
-        prop_firm_compliant: false,
-      };
-    }
-
-    const qualityScore = confluence >= 85 ? "STRONG" : confluence >= 75 ? "MEDIUM" : "WEAK" as SignalQuality;
+    const alignment = computeTimeframeAlignmentScore(bias, topDownStates);
+    const rrScore = rrFinal >= 3 ? 15 : rrFinal >= 2 ? 10 : rrFinal >= 1.5 ? 5 : 0;
+    const confluence = clamp(Math.round(baseConfluence * 0.6 + alignment.score + rrScore), 0, 100);
+    const qualityScore = confluence >= 80 ? "STRONG" : confluence >= 65 ? "MEDIUM" : confluence >= 45 ? "WEAK" : "INVALID" as SignalQuality;
     const executionPlan = formatExecutionPlan({
       direction: "LONG",
       entry: entryPrice,
@@ -621,7 +635,7 @@ const calculateEntrySignal = (
         confluence,
         plan: executionPlan,
         anchorLabel: `below ${lastLow?.label || "swing low"}`,
-      }) + (extensionNote ? ` | ${extensionNote}` : ""),
+      }) + (extensionNote ? ` | ${extensionNote}` : "") + (rrFinal < 1.5 ? " | RR below 1:1.5" : ""),
       confluence_score: confluence,
       signal_quality: qualityScore,
       pattern_type: patternType,
@@ -641,7 +655,7 @@ const calculateEntrySignal = (
         take_profit_2: null,
         risk_reward_ratio: "N/A",
         rationale: "Bearish bias detected but breakout requires a clear swing low and prior swing high.",
-        confluence_score: confluence,
+        confluence_score: baseConfluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
         prop_firm_compliant: false,
@@ -665,7 +679,7 @@ const calculateEntrySignal = (
         take_profit_2: null,
         risk_reward_ratio: "N/A",
         rationale: "No valid breakout targets below the swing low. Need a lower swing or nearby psych level.",
-        confluence_score: confluence,
+        confluence_score: baseConfluence,
         signal_quality: "INVALID",
         pattern_type: patternType,
         prop_firm_compliant: false,
@@ -690,23 +704,10 @@ const calculateEntrySignal = (
       }
     }
 
-    if (rrFinal < 1.5) {
-      return {
-        direction: "WAIT",
-        entry_price: null,
-        stop_loss: null,
-        take_profit_1: null,
-        take_profit_2: null,
-        risk_reward_ratio: "N/A",
-        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5). Wait for wider breakout targets or higher timeframe extension.`,
-        confluence_score: confluence,
-        signal_quality: "INVALID",
-        pattern_type: patternType,
-        prop_firm_compliant: false,
-      };
-    }
-
-    const qualityScore = confluence >= 85 ? "STRONG" : confluence >= 75 ? "MEDIUM" : "WEAK" as SignalQuality;
+    const alignment = computeTimeframeAlignmentScore(bias, topDownStates);
+    const rrScore = rrFinal >= 3 ? 15 : rrFinal >= 2 ? 10 : rrFinal >= 1.5 ? 5 : 0;
+    const confluence = clamp(Math.round(baseConfluence * 0.6 + alignment.score + rrScore), 0, 100);
+    const qualityScore = confluence >= 80 ? "STRONG" : confluence >= 65 ? "MEDIUM" : confluence >= 45 ? "WEAK" : "INVALID" as SignalQuality;
     const executionPlan = formatExecutionPlan({
       direction: "SHORT",
       entry: entryPrice,
@@ -736,7 +737,7 @@ const calculateEntrySignal = (
         confluence,
         plan: executionPlan,
         anchorLabel: `above ${lastHigh?.label || "swing high"}`,
-      }) + (extensionNote ? ` | ${extensionNote}` : ""),
+      }) + (extensionNote ? ` | ${extensionNote}` : "") + (rrFinal < 1.5 ? " | RR below 1:1.5" : ""),
       confluence_score: confluence,
       signal_quality: qualityScore,
       pattern_type: patternType,
@@ -767,8 +768,8 @@ export const buildAnalysis = (state: ChartState, topDownStates?: ChartState[]): 
       ? topDownStates[topDownStates.length - 2]
       : undefined;
 
-  const plan = buildSniperPlan(bias, state, structure, higherTimeframe);
-  const confidence = computeConfidence(state);
+  const plan = buildSniperPlan(bias, state, structure, higherTimeframe, topDownStates);
+  const confidence = computeConfidence(state, topDownStates);
 
   const notes: string[] = [];
   if (state.chop_detected) notes.push("Choppy structure detected; trade selectivity required.");
