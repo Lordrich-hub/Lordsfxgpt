@@ -466,6 +466,22 @@ const calculateEntrySignal = (
   const baseConfluence = calculateConfluenceScore(bias, state, lastHigh, lastLow);
   const patternType = "BREAKOUT" as const;
 
+  if (state.trend_hint === "unknown") {
+    return {
+      direction: "WAIT",
+      entry_price: null,
+      stop_loss: null,
+      take_profit_1: null,
+      take_profit_2: null,
+      risk_reward_ratio: "N/A",
+      rationale: "Trend is unclear. Provide a clearer chart to determine structure bias.",
+      confluence_score: baseConfluence,
+      signal_quality: "INVALID",
+      pattern_type: patternType,
+      prop_firm_compliant: false,
+    };
+  }
+
   // Additional guard: breakouts only in directional conditions
   if (bias === "Range" || bias === "Transition") {
     return {
@@ -601,11 +617,27 @@ const calculateEntrySignal = (
         extensionNote = "TP extended to higher timeframe swing for better R:R.";
       }
     }
-
     const alignment = computeTimeframeAlignmentScore(bias, topDownStates);
     const rrScore = rrFinal >= 3 ? 15 : rrFinal >= 2 ? 10 : rrFinal >= 1.5 ? 5 : 0;
     const confluence = clamp(Math.round(baseConfluence * 0.6 + alignment.score + rrScore), 0, 100);
     const qualityScore = confluence >= 80 ? "STRONG" : confluence >= 65 ? "MEDIUM" : confluence >= 45 ? "WEAK" : "INVALID" as SignalQuality;
+
+    if (rrFinal < 1.5) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5).`,
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
     const executionPlan = formatExecutionPlan({
       direction: "LONG",
       entry: entryPrice,
@@ -703,11 +735,27 @@ const calculateEntrySignal = (
         extensionNote = "TP extended to higher timeframe swing for better R:R.";
       }
     }
-
     const alignment = computeTimeframeAlignmentScore(bias, topDownStates);
     const rrScore = rrFinal >= 3 ? 15 : rrFinal >= 2 ? 10 : rrFinal >= 1.5 ? 5 : 0;
     const confluence = clamp(Math.round(baseConfluence * 0.6 + alignment.score + rrScore), 0, 100);
     const qualityScore = confluence >= 80 ? "STRONG" : confluence >= 65 ? "MEDIUM" : confluence >= 45 ? "WEAK" : "INVALID" as SignalQuality;
+
+    if (rrFinal < 1.5) {
+      return {
+        direction: "WAIT",
+        entry_price: null,
+        stop_loss: null,
+        take_profit_1: null,
+        take_profit_2: null,
+        risk_reward_ratio: "N/A",
+        rationale: `POOR R:R. Current ratio 1:${rrFinal.toFixed(1)} (need minimum 1:1.5).`,
+        confluence_score: confluence,
+        signal_quality: "INVALID",
+        pattern_type: patternType,
+        prop_firm_compliant: false,
+      };
+    }
+
     const executionPlan = formatExecutionPlan({
       direction: "SHORT",
       entry: entryPrice,

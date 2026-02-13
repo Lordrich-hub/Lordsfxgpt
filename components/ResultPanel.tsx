@@ -256,21 +256,21 @@ export function ResultPanel({ data, isLoading, error }: Props) {
                 )}
 
                 {data.sniper_plan.entry_signal.entry_price !== null ? (
-                  <div className="bg-zinc-900/50 p-3 rounded space-y-2">
-                    <div className="flex items-center justify-between text-sm gap-3">
-                      <div>
+                  <div className="bg-zinc-900/50 p-3 rounded">
+                    <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                      <div className="flex flex-col">
                         <p className="text-xs text-muted">Entry</p>
                         <p className="font-mono text-accent font-semibold">{formatPrice(data.sniper_plan.entry_signal.entry_price)}</p>
                       </div>
-                      <div>
+                      <div className="flex flex-col">
                         <p className="text-xs text-muted">SL</p>
                         <p className="font-mono text-rose-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.stop_loss || 0)}</p>
                       </div>
-                      <div>
+                      <div className="flex flex-col">
                         <p className="text-xs text-muted">TP1</p>
                         <p className="font-mono text-emerald-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.take_profit_1 || 0)}</p>
                       </div>
-                      <div>
+                      <div className="flex flex-col">
                         <p className="text-xs text-muted">TP2</p>
                         <p className="font-mono text-emerald-400 font-semibold">{formatPrice(data.sniper_plan.entry_signal.take_profit_2 || 0)}</p>
                       </div>
